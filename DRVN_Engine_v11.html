@@ -462,7 +462,9 @@ canvas#donutchart{width:140px;height:140px;}
   <div class="lw">
     <div class="llogo">DRVN</div>
     <div class="lsub">Your edge. Every session.</div>
-    <div class="lf"><label>API Key (Finnhub or Polygon.io)</label><input type="password" id="fk" placeholder="Finnhub: d1... or Polygon: your key..."><div class="hint">Finnhub key for live quotes + Polygon key for candles. Enter either one — both work.</div></div>
+    <div class="lf"><label>Finnhub Key <span style="font-size:10px;color:var(--gd);font-weight:600;">LIVE QUOTES</span></label><input type="password" id="fk" placeholder="d71i... — free at finnhub.io"><div class="hint">Real-time prices, % change · 60 calls/min free</div></div>
+    <div class="lf"><label>Polygon.io Key <span style="font-size:10px;color:var(--blue);font-weight:600;">CANDLES + TPO</span></label><input type="password" id="pk" placeholder="Your Polygon key — free at polygon.io"><div class="hint">5-min chart bars, Live TPO shape · 5 calls/min free</div></div>
+    <div class="lf"><label>Airtable Token <span style="font-size:10px;color:var(--gold);font-weight:600;">LEVELS + BIAS</span></label><input type="password" id="at" placeholder="pat..."><div class="hint" id="at-hint">Daily levels, pivots, TPO bias · data.records:read on base appq8EtS5o9d801kZ</div></div>
     <div class="lf"><label>Airtable Token</label><input type="password" id="at" placeholder="pat..."><div class="hint">data.records:read on base appq8EtS5o9d801kZ</div></div>
     <div class="lf"><label>Base ID</label><input type="text" id="ab" value="appq8EtS5o9d801kZ"></div>
     <div class="lf"><label>Table ID</label><input type="text" id="atbl" value="tbltBwEPlkGpec8Kf"></div>
@@ -732,7 +734,7 @@ canvas#donutchart{width:140px;height:140px;}
 const F={symbol:'Global Quote symbol',company:'Company Name',tpoShape:'TPO Profile Type',valueArea:'Value Area Relationship',tpoBias:'TPO Bias',dailyBias:'Daily Bias',weeklyBias:'Weekly Bias',monthlyBias:'Monthly Bias',dailyCenter:'Daily Center',dailyUpper1:'Daily Upper 1',dailyUpper2:'Daily Upper 2',dailyLower1:'Daily Lower 1',dailyLower2:'Daily Lower 2',dailyHigh:'Daily High',dailyLow:'Daily Low',dailyClose:'Daily Close',weeklyCenter:'Weekly Center',weeklyUpper1:'Weekly Upper 1',weeklyUpper2:'Weekly Upper 2',weeklyLower1:'Weekly Lower 1',weeklyLower2:'Weekly Lower 2',weeklyHigh:'Weekly High',weeklyLow:'Weekly Low',weeklyMid:'Weekly Midpoint',weeklyClose:'Weekly Close',monthlyCenter:'Monthly Center',monthlyUpper1:'Monthly Upper 1',monthlyUpper2:'Monthly Upper 2',monthlyLower1:'Monthly Lower 1',monthlyLower2:'Monthly Lower 2',monthlyHigh:'Monthly High',monthlyLow:'Monthly Low',monthlyMid:'Monthly Midpoint',monthlyLast:'Monthly Last',monthlyPos:'Monthly Position %',monthlyDistUp:'Monthly Distance from Upper %',monthlyDistLow:'Monthly Distance from Lower %',atr14:'ATR (14)',reflector:'Reflector Link'};
 const SYMS=['SPY','QQQ','IWM','NVDA','TSLA','AMD','MSFT','AAPL','META','PLTR'];
 const NAMES={SPY:'S&P 500 ETF',QQQ:'Nasdaq 100',IWM:'Russell 2000',NVDA:'NVIDIA',TSLA:'Tesla',AMD:'AMD',MSFT:'Microsoft',AAPL:'Apple',META:'Meta',PLTR:'Palantir'};
-let fKey='',atToken='',atBase='appq8EtS5o9d801kZ',atTbl='tbltBwEPlkGpec8Kf',spyThr=0.30;
+let fKey='',polyKey='',atToken='',atBase='appq8EtS5o9d801kZ',atTbl='tbltBwEPlkGpec8Kf',spyThr=0.30;
 let MKT={},AT={},levels=[],cpSym='SPY',cpOpen=false,tickVal=0,spyAtr6=null;
 let rfTimer=null,rfCd=30,lvlId=1;
 let sparkData={}; // {SYM: [prices]} for sparklines
@@ -750,7 +752,7 @@ setInterval(mktStat,60000);mktStat();
 
 function startRing(){clearInterval(rfTimer);rfCd=30;rfTimer=setInterval(()=>{rfCd--;const p=document.getElementById('rfprog'),c=document.getElementById('rfcd');if(p)p.style.strokeDashoffset=CIRC*(rfCd/30);if(c)c.textContent=rfCd+'s';if(rfCd<=0){rfCd=30;doRefresh();}},1000);}
 
-async function doLogin(){fKey=document.getElementById('fk').value.trim();atToken=document.getElementById('at').value.trim();atBase=document.getElementById('ab').value.trim();atTbl=document.getElementById('atbl').value.trim();spyThr=parseFloat(document.getElementById('spythr').value)||0.30;if(!fKey||!atToken){const e=document.getElementById('lerr');e.textContent='Enter Finnhub key and Airtable token';e.style.display='block';return;}document.getElementById('login').style.display='none';document.getElementById('app').style.display='flex';buildSidebar();document.getElementById('sbspysub').textContent=`Threshold: ${spyThr.toFixed(2)}`;await doRefresh();startRing();startTickSim();}
+async function doLogin(){fKey=document.getElementById('fk').value.trim();polyKey=document.getElementById('pk')?document.getElementById('pk').value.trim():'';atToken=document.getElementById('at').value.trim();atBase=document.getElementById('ab').value.trim();atTbl=document.getElementById('atbl').value.trim();spyThr=parseFloat(document.getElementById('spythr').value)||0.30;if(!atToken){const e=document.getElementById('lerr');e.textContent='Airtable token is required. Finnhub and Polygon keys are optional but needed for live prices.';e.style.display='block';return;}document.getElementById('login').style.display='none';document.getElementById('app').style.display='flex';buildSidebar();document.getElementById('sbspysub').textContent=`Threshold: ${spyThr.toFixed(2)}`;await doRefresh();startRing();startTickSim();}
 
 function buildSidebar(){document.getElementById('sbsyms').innerHTML=SYMS.map(s=>`<button class="sybtn" id="sb-${s}" onclick="openCockpit('${s}')"><span class="syname">${s}</span><span class="sysc ssn" id="ssc-${s}">—</span></button>`).join('');}
 function updateSidebar(){SYMS.forEach(s=>{const cv=score(s),el=document.getElementById('ssc-'+s);if(el){el.textContent=cv.total;el.className='sysc '+(cv.dir==='bull'?'ssg':cv.dir==='bear'?'ssr':'ssn');}});}
@@ -791,7 +793,7 @@ async function fetchFinnhub(){
     function fmt(dt){return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');}
     function prevTrading(dt){const p=new Date(dt);do{p.setDate(p.getDate()-1);}while(p.getDay()===0||p.getDay()===6);return p;}
     const useDate=fmt(prevTrading(etNow));
-    const url='https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/'+useDate+'?adjusted=true&apiKey='+fKey;
+    const url='https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/'+useDate+'?adjusted=true&apiKey='+(polyKey||fKey);
     console.log('[DRVN] Polygon grouped daily',useDate);
     const r=await fetch(url);
     if(r.ok){
@@ -820,7 +822,8 @@ async function fetchAirtable(){const st=document.getElementById('atst');st.textC
 // ── CANDLE FETCH ──────────────────────────────────────────────
 // Returns {t,o,h,l,c}[] or null. Handles DST + prev-day fallback.
 async function fetchCandles(sym){
-  if(!fKey)return null;
+  const pKey=polyKey||fKey;
+  if(!pKey)return null;
   try{
     const etStr=new Date().toLocaleString('en-US',{timeZone:'America/New_York'});
     const etNow=new Date(etStr);
@@ -829,7 +832,7 @@ async function fetchCandles(sym){
     function fmt(dt){return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');}
     function prevTrading(dt){const p=new Date(dt);do{p.setDate(p.getDate()-1);}while(p.getDay()===0||p.getDay()===6);return p;}
     async function polyCandles(date){
-      const url='https://api.polygon.io/v2/aggs/ticker/'+sym+'/range/5/minute/'+date+'/'+date+'?adjusted=true&sort=asc&limit=300&apiKey='+fKey;
+      const url='https://api.polygon.io/v2/aggs/ticker/'+sym+'/range/5/minute/'+date+'/'+date+'?adjusted=true&sort=asc&limit=300&apiKey='+pKey;
       console.log('[DRVN] Polygon candles',sym,date);
       const r=await fetch(url);
       if(!r.ok){console.warn('[DRVN] candles HTTP',r.status);return null;}
