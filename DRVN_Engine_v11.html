@@ -462,7 +462,7 @@ canvas#donutchart{width:140px;height:140px;}
   <div class="lw">
     <div class="llogo">DRVN</div>
     <div class="lsub">Your edge. Every session.</div>
-    <div class="lf"><label>Polygon.io Key</label><input type="password" id="fk" placeholder="Your Polygon.io API key..."><div class="hint">Free key at polygon.io → Dashboard. Full CORS support — works on GitHub Pages.</div></div>
+    <div class="lf"><label>API Key (Finnhub or Polygon.io)</label><input type="password" id="fk" placeholder="Finnhub: d1... or Polygon: your key..."><div class="hint">Finnhub key for live quotes + Polygon key for candles. Enter either one — both work.</div></div>
     <div class="lf"><label>Airtable Token</label><input type="password" id="at" placeholder="pat..."><div class="hint">data.records:read on base appq8EtS5o9d801kZ</div></div>
     <div class="lf"><label>Base ID</label><input type="text" id="ab" value="appq8EtS5o9d801kZ"></div>
     <div class="lf"><label>Table ID</label><input type="text" id="atbl" value="tbltBwEPlkGpec8Kf"></div>
@@ -760,28 +760,43 @@ async function doRefresh(){const btn=document.getElementById('rfbtn');btn.classL
 async function fetchFinnhub(){
   const st=document.getElementById('fhst');
   st.textContent='Quotes: …';st.className='stbadge warn';
-  if(!fKey){st.textContent='Add Polygon key';st.className='stbadge err';return;}
+  if(!fKey){st.textContent='Add API key';st.className='stbadge err';return;}
   let ok=0;
-  try{
-    const url='https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers?tickers='+SYMS.join(',')+'&apiKey='+fKey;
-    const r=await fetch(url);
-    if(r.ok){
-      const j=await r.json();
-      (j.tickers||[]).forEach(function(t){
-        const d=t.day,pd=t.prevDay,s=t.ticker;
-        if(!s||!d||!d.c)return;
-        const price=d.c,prev=pd&&pd.c?pd.c:price;
-        sparkData[s]=(sparkData[s]||[]).slice(-19).concat([price]);
-        MKT[s]={price:price,prev:prev,chg:price-prev,pct:(price-prev)/prev*100,hi:d.h||price,lo:d.l||price,open:d.o||price};
-        ok++;
-      });
-      st.textContent='Quotes: '+ok+'/'+SYMS.length;
-      st.className='stbadge '+(ok===SYMS.length?'ok':ok>0?'warn':'err');
-      return;
+  // Try Finnhub first (works from https://)
+  const fhResults=await Promise.allSettled(SYMS.map(async function(s){
+    const r=await fetch('https://finnhub.io/api/v1/quote?symbol='+s+'&token='+fKey);
+    if(!r.ok)throw new Error(r.status);
+    const j=await r.json();if(!j.c)throw new Error('no data');
+    return{s:s,d:j};
+  }));
+  let usedFinnhub=false;
+  fhResults.forEach(function(r){
+    if(r.status==='fulfilled'&&r.value&&r.value.d&&r.value.d.c){
+      const s=r.value.s,d=r.value.d;
+      sparkData[s]=(sparkData[s]||[]).slice(-19).concat([d.c]);
+      MKT[s]={price:d.c,prev:d.pc,chg:d.d!==undefined?d.d:(d.c-d.pc),pct:d.dp!==undefined?d.dp:((d.c-d.pc)/d.pc*100),hi:d.h,lo:d.l,open:d.o};
+      ok++;usedFinnhub=true;
     }
-    console.warn('[DRVN] Polygon snapshot HTTP',r.status);
-  }catch(e){console.error('[DRVN] fetchFinnhub:',e);}
-  st.textContent='Quotes: error';st.className='stbadge err';
+  });
+  if(ok>0){st.textContent='Quotes: '+ok+'/'+SYMS.length+' (FH)';st.className='stbadge '+(ok===SYMS.length?'ok':'warn');return;}
+  // Fallback: Polygon previous close (free tier)
+  const polyResults=await Promise.allSettled(SYMS.map(async function(s){
+    const r=await fetch('https://api.polygon.io/v2/aggs/ticker/'+s+'/prev?adjusted=true&apiKey='+fKey);
+    if(!r.ok)throw new Error(r.status);
+    const j=await r.json();
+    const res=j.results&&j.results[0];if(!res)throw new Error('no data');
+    return{s:s,c:res.c,o:res.o,h:res.h,l:res.l,pc:res.o};
+  }));
+  polyResults.forEach(function(r){
+    if(r.status==='fulfilled'&&r.value){
+      const v=r.value,price=v.c,prev=v.pc||v.o;
+      sparkData[v.s]=(sparkData[v.s]||[]).slice(-19).concat([price]);
+      MKT[v.s]={price:price,prev:prev,chg:price-prev,pct:(price-prev)/prev*100,hi:v.h,lo:v.l,open:v.o};
+      ok++;
+    }
+  });
+  st.textContent='Quotes: '+ok+'/'+SYMS.length+(ok>0?' (PG)':' — check key');
+  st.className='stbadge '+(ok===SYMS.length?'ok':ok>0?'warn':'err');
 }
 
 async function fetchCandles(sym){
@@ -791,14 +806,8 @@ async function fetchCandles(sym){
     const etNow=new Date(etStr);
     const etH=etNow.getHours(),etM=etNow.getMinutes(),etDay=etNow.getDay();
     const mktOpen=etDay>=1&&etDay<=5&&(etH>9||(etH===9&&etM>=30))&&etH<16;
-    function fmt(dt){
-      return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
-    }
-    function prevTrading(dt){
-      const p=new Date(dt);
-      do{p.setDate(p.getDate()-1);}while(p.getDay()===0||p.getDay()===6);
-      return p;
-    }
+    function fmt(dt){return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');}
+    function prevTrading(dt){const p=new Date(dt);do{p.setDate(p.getDate()-1);}while(p.getDay()===0||p.getDay()===6);return p;}
     async function polyCandles(date){
       const url='https://api.polygon.io/v2/aggs/ticker/'+sym+'/range/5/minute/'+date+'/'+date+'?adjusted=true&sort=asc&limit=300&apiKey='+fKey;
       console.log('[DRVN] Polygon candles',sym,date);
@@ -812,13 +821,9 @@ async function fetchCandles(sym){
     const startDt=mktOpen?etNow:prevTrading(etNow);
     let dt=new Date(startDt);
     for(let i=0;i<5;i++){
-      if(dt.getDay()>=1&&dt.getDay()<=5){
-        const c=await polyCandles(fmt(dt));
-        if(c&&c.length)return c;
-      }
+      if(dt.getDay()>=1&&dt.getDay()<=5){const c=await polyCandles(fmt(dt));if(c&&c.length)return c;}
       dt=prevTrading(dt);
     }
-    console.warn('[DRVN] no candles for',sym);
     return null;
   }catch(e){console.error('[DRVN] fetchCandles:',e);return null;}
 }
