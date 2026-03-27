@@ -762,43 +762,63 @@ async function fetchFinnhub(){
   st.textContent='Quotes: …';st.className='stbadge warn';
   if(!fKey){st.textContent='Add API key';st.className='stbadge err';return;}
   let ok=0;
-  // Try Finnhub first (works from https://)
-  const fhResults=await Promise.allSettled(SYMS.map(async function(s){
+
+  // Try Finnhub quotes (works from https://, 1 call per symbol)
+  const fhRes=await Promise.allSettled(SYMS.map(async function(s){
     const r=await fetch('https://finnhub.io/api/v1/quote?symbol='+s+'&token='+fKey);
     if(!r.ok)throw new Error(r.status);
-    const j=await r.json();if(!j.c)throw new Error('no data');
+    const j=await r.json();if(!j||!j.c)throw new Error('no data');
     return{s:s,d:j};
   }));
-  let usedFinnhub=false;
-  fhResults.forEach(function(r){
+  fhRes.forEach(function(r){
     if(r.status==='fulfilled'&&r.value&&r.value.d&&r.value.d.c){
       const s=r.value.s,d=r.value.d;
       sparkData[s]=(sparkData[s]||[]).slice(-19).concat([d.c]);
       MKT[s]={price:d.c,prev:d.pc,chg:d.d!==undefined?d.d:(d.c-d.pc),pct:d.dp!==undefined?d.dp:((d.c-d.pc)/d.pc*100),hi:d.h,lo:d.l,open:d.o};
-      ok++;usedFinnhub=true;
-    }
-  });
-  if(ok>0){st.textContent='Quotes: '+ok+'/'+SYMS.length+' (FH)';st.className='stbadge '+(ok===SYMS.length?'ok':'warn');return;}
-  // Fallback: Polygon previous close (free tier)
-  const polyResults=await Promise.allSettled(SYMS.map(async function(s){
-    const r=await fetch('https://api.polygon.io/v2/aggs/ticker/'+s+'/prev?adjusted=true&apiKey='+fKey);
-    if(!r.ok)throw new Error(r.status);
-    const j=await r.json();
-    const res=j.results&&j.results[0];if(!res)throw new Error('no data');
-    return{s:s,c:res.c,o:res.o,h:res.h,l:res.l,pc:res.o};
-  }));
-  polyResults.forEach(function(r){
-    if(r.status==='fulfilled'&&r.value){
-      const v=r.value,price=v.c,prev=v.pc||v.o;
-      sparkData[v.s]=(sparkData[v.s]||[]).slice(-19).concat([price]);
-      MKT[v.s]={price:price,prev:prev,chg:price-prev,pct:(price-prev)/prev*100,hi:v.h,lo:v.l,open:v.o};
       ok++;
     }
   });
-  st.textContent='Quotes: '+ok+'/'+SYMS.length+(ok>0?' (PG)':' — check key');
-  st.className='stbadge '+(ok===SYMS.length?'ok':ok>0?'warn':'err');
+  if(ok>0){
+    st.textContent='Quotes: '+ok+'/'+SYMS.length;
+    st.className='stbadge '+(ok===SYMS.length?'ok':'warn');
+    return;
+  }
+
+  // Finnhub failed — try Polygon grouped daily (1 single API call for ALL symbols)
+  try{
+    const etStr=new Date().toLocaleString('en-US',{timeZone:'America/New_York'});
+    const etNow=new Date(etStr);
+    function fmt(dt){return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');}
+    function prevTrading(dt){const p=new Date(dt);do{p.setDate(p.getDate()-1);}while(p.getDay()===0||p.getDay()===6);return p;}
+    const useDate=fmt(prevTrading(etNow));
+    const url='https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/'+useDate+'?adjusted=true&apiKey='+fKey;
+    console.log('[DRVN] Polygon grouped daily',useDate);
+    const r=await fetch(url);
+    if(r.ok){
+      const j=await r.json();
+      const results=j.results||[];
+      const byTicker={};
+      results.forEach(function(b){byTicker[b.T]=b;});
+      SYMS.forEach(function(s){
+        const b=byTicker[s];if(!b||!b.c)return;
+        sparkData[s]=(sparkData[s]||[]).slice(-19).concat([b.c]);
+        MKT[s]={price:b.c,prev:b.o,chg:b.c-b.o,pct:(b.c-b.o)/b.o*100,hi:b.h,lo:b.l,open:b.o};
+        ok++;
+      });
+      st.textContent='Quotes: '+ok+'/'+SYMS.length+(ok>0?' (PG)':'');
+      st.className='stbadge '+(ok===SYMS.length?'ok':ok>0?'warn':'err');
+      return;
+    } else {
+      console.warn('[DRVN] Polygon grouped HTTP',r.status);
+    }
+  }catch(e){console.error('[DRVN] Polygon grouped:',e);}
+  st.textContent='Quotes: error — check key';st.className='stbadge err';
 }
 
+async function fetchAirtable(){const st=document.getElementById('atst');st.textContent='Airtable: …';st.className='stbadge warn';try{const url=`https://api.airtable.com/v0/${atBase}/${atTbl}?maxRecords=200&pageSize=100`;const r=await fetch(url,{headers:{Authorization:`Bearer ${atToken}`}});if(!r.ok){st.textContent=`AT: ${r.status}`;st.className='stbadge err';showBanner(`Airtable HTTP ${r.status}`,'abr');return;}const j=await r.json();let all=j.records||[];let off=j.offset;while(off){const pr=await fetch(url+'&offset='+encodeURIComponent(off),{headers:{Authorization:`Bearer ${atToken}`}});const pd=await pr.json();all=all.concat(pd.records||[]);off=pd.offset;}AT={};all.forEach(rec=>{const f=rec.fields,sym=String(f[F.symbol]||'').trim().toUpperCase();if(!sym)return;AT[sym]={company:f[F.company]||'',tpoShape:f[F.tpoShape]||'',valueArea:f[F.valueArea]||'',tpoBias:f[F.tpoBias]||'',dailyBias:f[F.dailyBias]||'',weeklyBias:f[F.weeklyBias]||'',monthlyBias:f[F.monthlyBias]||'',atr14:pf(f[F.atr14]),dailyHigh:pf(f[F.dailyHigh]),dailyLow:pf(f[F.dailyLow]),dailyClose:pf(f[F.dailyClose]),dailyCenter:pf(f[F.dailyCenter]),dailyUpper1:pf(f[F.dailyUpper1]),dailyUpper2:pf(f[F.dailyUpper2]),dailyLower1:pf(f[F.dailyLower1]),dailyLower2:pf(f[F.dailyLower2]),weeklyHigh:pf(f[F.weeklyHigh]),weeklyLow:pf(f[F.weeklyLow]),weeklyMid:pf(f[F.weeklyMid]),weeklyClose:pf(f[F.weeklyClose]),weeklyCenter:pf(f[F.weeklyCenter]),weeklyUpper1:pf(f[F.weeklyUpper1]),weeklyUpper2:pf(f[F.weeklyUpper2]),weeklyLower1:pf(f[F.weeklyLower1]),weeklyLower2:pf(f[F.weeklyLower2]),monthlyHigh:pf(f[F.monthlyHigh]),monthlyLow:pf(f[F.monthlyLow]),monthlyMid:pf(f[F.monthlyMid]),monthlyCenter:pf(f[F.monthlyCenter]),monthlyUpper1:pf(f[F.monthlyUpper1]),monthlyUpper2:pf(f[F.monthlyUpper2]),monthlyLower1:pf(f[F.monthlyLower1]),monthlyLower2:pf(f[F.monthlyLower2]),monthlyLast:pf(f[F.monthlyLast]),monthlyPos:pf(f[F.monthlyPos]),monthlyDistUp:pf(f[F.monthlyDistUp]),monthlyDistLow:pf(f[F.monthlyDistLow]),reflector:f[F.reflector]||''};});const matched=SYMS.filter(s=>AT[s]).length;st.textContent=`Airtable: ${matched}/${SYMS.length}`;st.className='stbadge '+(matched===SYMS.length?'ok':matched>0?'warn':'err');}catch(e){document.getElementById('atst').textContent='AT: Error';document.getElementById('atst').className='stbadge err';showBanner('Airtable: '+e.message,'abr');}}
+
+// ── CANDLE FETCH ──────────────────────────────────────────────
+// Returns {t,o,h,l,c}[] or null. Handles DST + prev-day fallback.
 async function fetchCandles(sym){
   if(!fKey)return null;
   try{
@@ -815,7 +835,7 @@ async function fetchCandles(sym){
       if(!r.ok){console.warn('[DRVN] candles HTTP',r.status);return null;}
       const j=await r.json();
       if(!j.results||!j.results.length){console.log('[DRVN] no bars for',date);return null;}
-      console.log('[DRVN] got',j.results.length,'bars');
+      console.log('[DRVN] got',j.results.length,'bars for',sym);
       return j.results.map(function(b){return{t:Math.floor(b.t/1000),o:b.o,h:b.h,l:b.l,c:b.c};});
     }
     const startDt=mktOpen?etNow:prevTrading(etNow);
@@ -824,50 +844,8 @@ async function fetchCandles(sym){
       if(dt.getDay()>=1&&dt.getDay()<=5){const c=await polyCandles(fmt(dt));if(c&&c.length)return c;}
       dt=prevTrading(dt);
     }
+    console.warn('[DRVN] no candles for',sym);
     return null;
-  }catch(e){console.error('[DRVN] fetchCandles:',e);return null;}
-}
-
-async function fetchAirtable(){const st=document.getElementById('atst');st.textContent='Airtable: …';st.className='stbadge warn';try{const url=`https://api.airtable.com/v0/${atBase}/${atTbl}?maxRecords=200&pageSize=100`;const r=await fetch(url,{headers:{Authorization:`Bearer ${atToken}`}});if(!r.ok){st.textContent=`AT: ${r.status}`;st.className='stbadge err';showBanner(`Airtable HTTP ${r.status}`,'abr');return;}const j=await r.json();let all=j.records||[];let off=j.offset;while(off){const pr=await fetch(url+'&offset='+encodeURIComponent(off),{headers:{Authorization:`Bearer ${atToken}`}});const pd=await pr.json();all=all.concat(pd.records||[]);off=pd.offset;}AT={};all.forEach(rec=>{const f=rec.fields,sym=String(f[F.symbol]||'').trim().toUpperCase();if(!sym)return;AT[sym]={company:f[F.company]||'',tpoShape:f[F.tpoShape]||'',valueArea:f[F.valueArea]||'',tpoBias:f[F.tpoBias]||'',dailyBias:f[F.dailyBias]||'',weeklyBias:f[F.weeklyBias]||'',monthlyBias:f[F.monthlyBias]||'',atr14:pf(f[F.atr14]),dailyHigh:pf(f[F.dailyHigh]),dailyLow:pf(f[F.dailyLow]),dailyClose:pf(f[F.dailyClose]),dailyCenter:pf(f[F.dailyCenter]),dailyUpper1:pf(f[F.dailyUpper1]),dailyUpper2:pf(f[F.dailyUpper2]),dailyLower1:pf(f[F.dailyLower1]),dailyLower2:pf(f[F.dailyLower2]),weeklyHigh:pf(f[F.weeklyHigh]),weeklyLow:pf(f[F.weeklyLow]),weeklyMid:pf(f[F.weeklyMid]),weeklyClose:pf(f[F.weeklyClose]),weeklyCenter:pf(f[F.weeklyCenter]),weeklyUpper1:pf(f[F.weeklyUpper1]),weeklyUpper2:pf(f[F.weeklyUpper2]),weeklyLower1:pf(f[F.weeklyLower1]),weeklyLower2:pf(f[F.weeklyLower2]),monthlyHigh:pf(f[F.monthlyHigh]),monthlyLow:pf(f[F.monthlyLow]),monthlyMid:pf(f[F.monthlyMid]),monthlyCenter:pf(f[F.monthlyCenter]),monthlyUpper1:pf(f[F.monthlyUpper1]),monthlyUpper2:pf(f[F.monthlyUpper2]),monthlyLower1:pf(f[F.monthlyLower1]),monthlyLower2:pf(f[F.monthlyLower2]),monthlyLast:pf(f[F.monthlyLast]),monthlyPos:pf(f[F.monthlyPos]),monthlyDistUp:pf(f[F.monthlyDistUp]),monthlyDistLow:pf(f[F.monthlyDistLow]),reflector:f[F.reflector]||''};});const matched=SYMS.filter(s=>AT[s]).length;st.textContent=`Airtable: ${matched}/${SYMS.length}`;st.className='stbadge '+(matched===SYMS.length?'ok':matched>0?'warn':'err');}catch(e){document.getElementById('atst').textContent='AT: Error';document.getElementById('atst').className='stbadge err';showBanner('Airtable: '+e.message,'abr');}}
-
-// ── CANDLE FETCH ──────────────────────────────────────────────
-// Returns {t,o,h,l,c}[] or null. Handles DST + prev-day fallback.
-async function fetchCandles(sym){
-  try{
-    const now=Math.floor(Date.now()/1000);
-    const etNow=new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
-    // Detect EST (UTC-5) vs EDT (UTC-4)
-    const janOff=new Date(etNow.getFullYear(),0,1).getTimezoneOffset();
-    const isDST=etNow.getTimezoneOffset()<janOff;
-    const utcHrOffset=isDST?4:5; // hours to add to 9:30 ET to get UTC
-    function dayOpen(dt){
-      const y=dt.getFullYear(),m=String(dt.getMonth()+1).padStart(2,'0'),d=String(dt.getDate()).padStart(2,'0');
-      return Math.floor(new Date(`${y}-${m}-${d}T${String(9+utcHrOffset).padStart(2,'0')}:30:00Z`).getTime()/1000);
-    }
-    function dayClose(dt){return dayOpen(dt)+(6.5*3600);}
-    function prevTrading(dt){
-      const p=new Date(dt);p.setDate(p.getDate()-1);
-      if(p.getDay()===0)p.setDate(p.getDate()-1);
-      if(p.getDay()===6)p.setDate(p.getDate()-1);
-      return p;
-    }
-    const etH=etNow.getHours(),etM=etNow.getMinutes();
-    const mktOpen=(etH>9||(etH===9&&etM>=30))&&etH<16;
-    const todayOpen=dayOpen(etNow);
-    const toTime=mktOpen?now:dayClose(etNow);
-    async function fetchRange(from,to){
-      const url=`https://finnhub.io/api/v1/stock/candle?symbol=${sym}&resolution=5&from=${from}&to=${to}&token=${fKey}`;
-      const r=await fetch(url);if(!r.ok)return null;
-      const j=await r.json();
-      if(j.s!=='ok'||!j.t?.length)return null;
-      return j.t.map((t,i)=>({t,o:j.o[i],h:j.h[i],l:j.l[i],c:j.c[i]}));
-    }
-    // Try today first
-    const todayCandles=await fetchRange(todayOpen,toTime);
-    if(todayCandles)return todayCandles;
-    // Fallback: previous trading day
-    const prev=prevTrading(etNow);
-    return await fetchRange(dayOpen(prev),dayClose(prev));
   }catch(e){console.error('[DRVN] fetchCandles:',e);return null;}
 }
 
@@ -1282,7 +1260,7 @@ function buildLiveTPO(sym){
 
   if(!candles||candles.length<2){
     badge.textContent='● WAITING';badge.className='tpo-live-badge';
-    if(meta)meta.textContent='No candle data — check Finnhub key';
+    if(meta)meta.textContent='No candle data — loading...';
     document.getElementById('tpoletters').innerHTML='<div style="font-size:12px;color:var(--t3);padding:6px 0;">Open market hours or check your Finnhub key.</div>';
     document.getElementById('tpovainf').innerHTML='';
     drawTPOHeatmap(sym,null,null,null,null);
