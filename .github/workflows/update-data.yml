@@ -1,0 +1,36 @@
+name: DRVN Engine Live Data Feed
+
+on:
+  schedule:
+    - cron: '*/5 13-21 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  fetch-and-update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run DRVN data fetcher
+        env:
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+          AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
+        run: python fetch_data.py
+
+      - name: Commit and push data.json
+        run: |
+          git config --global user.name "DRVN Engine Bot"
+          git config --global user.email "engine@drvnedge.com"
+          git add data.json
+          git diff --staged --quiet || git commit -m "chore: update live market data [$(date -u '+%Y-%m-%d %H:%M UTC')]"
+          git push
